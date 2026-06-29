@@ -2,87 +2,117 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from tabulate import tabulate
 import math
+import os
 
-def adamic_adar_index(graph, node1, node2):
-    out_neighbors = set(graph.successors(node1))
-    in_neighbors = set(graph.predecessors(node2))
-    common_neighbors = out_neighbors.intersection(in_neighbors)
-    index = 0
-    for neighbor in common_neighbors:
-        out_degree = graph.out_degree(neighbor)
-        if out_degree > 0:
-            index += 1 / math.log(out_degree+1)
-    return index
 
-def get_predicted_edges(graph, node):
-    predicted_edges = []
+def adamic_adar_score(graph, node1, node2):
+    """
+    Adamic-Adar Index: Sum of inverse log(degree) of common neighbors
+    Formula: Σ 1/log(k(z)) for z ∈ N(u) ∩ N(v)
+    
+    Better than common neighbors because it weights less-connected nodes higher
+    """
+    out_neighbors1 = set(graph.successors(node1))
+    in_neighbors2 = set(graph.predecessors(node2))
+    common = out_neighbors1.intersection(in_neighbors2)
+    
+    if len(common) == 0:
+        return 0
+    
+    score = 0
+    for node in common:
+        degree = graph.degree(node)
+        if degree > 1:
+            score += 1.0 / math.log(degree)
+    
+    return score
+
+
+def get_predicted_edges_aa(graph, node, threshold=0.5):
+    """Get predicted edges using Adamic-Adar algorithm"""
+    predicted = []
     for neighbor in graph.nodes():
         if neighbor != node and not graph.has_edge(node, neighbor):
-            index = adamic_adar_index(graph, node, neighbor)
-            if index > 0.2:  # Modify the threshold as desired
-                predicted_edges.append((node, neighbor, index))
-    return predicted_edges
-
-def plot_subgraph(graph, node, predicted_edges):
-    plt.figure(figsize=(10, 6))
-    pos = nx.random_layout(graph)
-
-    # Create a subgraph with the selected node and its links
-    subgraph = graph.subgraph([node] + [neighbor for _, neighbor, _ in predicted_edges])
-
-    # Get the existing edges going from or into the selected node
-    existing_edges = [(u, v) for u, v in graph.edges() if v == node or u == node]
-
-    # Plot the subgraph with existing edges in black
-    nx.draw_networkx_edges(subgraph, pos, edgelist=existing_edges, edge_color='black', width=1.0)
-
-    # Plot the new predicted links in red
-    nx.draw_networkx_edges(subgraph, pos, edgelist=predicted_edges, edge_color='red', width=1.0)
-
-    nx.draw_networkx_nodes(subgraph, pos, node_color='lightblue', node_size=200)
-    nx.draw_networkx_labels(subgraph, pos, font_size=8)
-
-    plt.title(f'Sous-graphe du nœud {node} avec des liens existants et prédits')
-
-    plt.show()
+            score = adamic_adar_score(graph, node, neighbor)
+            if score > threshold:
+                predicted.append((node, neighbor, score))
+    
+    predicted.sort(key=lambda x: x[2], reverse=True)
+    return predicted
 
 
-G = nx.DiGraph()
+def load_network_from_mtx(mtx_file):
+    """Load graph from Matrix Market format"""
+    G = nx.DiGraph()
+    
+    try:
+        with open(mtx_file, 'r') as file:
+            for line in file:
+                line = line.strip()
+                if line.startswith('%'):
+                    continue
+                if not line:
+                    continue
+                
+                try:
+                    parts = [int(x) for x in line.split()[:2]]
+                    if len(parts) == 2:
+                        G.add_edge(parts[0], parts[1])
+                except (ValueError, IndexError):
+                    continue
+        
+        print(f"✓ Loaded: {len(G.nodes())} nodes, {len(G.edges())} edges")
+        return G
+    
+    except FileNotFoundError:
+        print(f"✗ File not found: {mtx_file}")
+        return None
+    except Exception as e:
+        print(f"✗ Error: {str(e)}")
+        return None
 
-with open(r'C:\Users\DELL\Desktop\complexiteprjtfinal\soc-twitter-follows.mtx', 'r') as file:
-    next(file)  # Skip the first line
-    next(file)  # Skip the second line
-    for line in file:
-        numbers = list(map(int, line.split()))
-        G.add_edge(numbers[0], numbers[1])
 
-# Convert node labels to integers
-G_int = nx.convert_node_labels_to_integers(G, first_label=0, ordering='default', label_attribute='old_label')
+def main():
+    # Find .mtx file
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    mtx_files = [f for f in os.listdir(current_dir) if f.endswith('.mtx')]
+    
+    if not mtx_files:
+        print("✗ No .mtx file found. Place your data file in the same directory.")
+        return
+    
+    mtx_file = os.path.join(current_dir, mtx_files[0])
+    
+    # Load graph
+    G = load_network_from_mtx(mtx_file)
+    if G is None:
+        return
+    
+    # Get predictions for a node
+    while True:
+        try:
+            node = int(input("\nEnter node ID (or -1 to exit): "))
+            if node == -1:
+                break
+            
+            if node not in G.nodes():
+                print(f"✗ Node not found")
+                continue
+            
+            predictions = get_predicted_edges_aa(G, node, threshold=0.1)
+            
+            if predictions:
+                print(f"\nAdamic-Adar Predictions for Node {node}:")
+                table = [[i, target, f"{score:.4f}"] for i, (_, target, score) in enumerate(predictions[:10], 1)]
+                print(tabulate(table, headers=["Rank", "Node", "Score"], tablefmt="grid"))
+            else:
+                print("No predictions found")
+        
+        except ValueError:
+            print("✗ Invalid input")
+        except Exception as e:
+            print(f"✗ Error: {str(e)}")
 
-while True:
-    node = int(input("Entrez le numéro du nœud pour générer le tableau des liens prédits : "))
 
-    if node not in G_int:
-        print("Nœud invalide. Veuillez entrer un numéro de nœud valide.")
-        continue
-
-    predicted_edges = get_predicted_edges(G_int, node)
-
-    if len(predicted_edges) == 0:
-        print("Aucun lien prédit pour le nœud spécifié.")
-    else:
-        table_data = []
-        max_index = max(index for _, _, index in predicted_edges)
-        for edge in predicted_edges:
-            node1, node2, index = edge
-            normalized_index = index / max_index if max_index > 0 else 0
-            table_data.append([node1, node2, normalized_index])
-
-        table = tabulate(table_data, headers=['Node 1', 'Node 2', 'Normalized Adamic-Adar Index'], tablefmt='psql')
-        print(table)
-
-        plot_subgraph(G_int, node, predicted_edges)
-
-    choice = input("Souhaitez-vous entrer un autre nœud ?  (y/n): ")
-    if choice.lower() != 'y':
-        break
+if __name__ == "__main__":
+    main()
